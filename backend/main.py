@@ -266,6 +266,63 @@ async def submit(
 
     return {"submission_id": submission.id, "status": "Pending"}
 
+@app.post("/api/submit/sync")
+async def submit_sync(
+    problem_id: str = Form(...),
+    code: str = Form(...),
+    language: str = Form(...),
+    session: AsyncSession = Depends(get_session)
+):
+    """Submit code and wait for judging result (synchronous)"""
+    # Validate problem
+    problem = await session.get(Problem, problem_id)
+    if not problem:
+        raise HTTPException(404, "Problem not found")
+
+    # Validate language
+    if language not in COMPILERS:
+        raise HTTPException(400, f"Unsupported language. Available: {list(COMPILERS.keys())}")
+
+    # Create submission
+    submission = Submission(
+        problem_id=problem_id,
+        code=code,
+        language=language,
+        status=JudgeStatus.JUDGING.value
+    )
+    session.add(submission)
+    await session.commit()
+    await session.refresh(submission)
+
+    # Run judge synchronously
+    async with judge_semaphore:
+        judge = Judge(problem_id, code, language, submission.id)
+        result = await judge.run(problem.time_limit, problem.memory_limit, problem.has_checker)
+
+        # Update result
+        submission.status = result.status.value
+        submission.time_used = result.time_used
+        submission.memory_used = result.memory_used
+        submission.score = result.score
+        submission.message = result.message
+        submission.failed_case = result.failed_case
+        await session.commit()
+        print(f"[Judge #{submission.id}] Result: {result.status.value}, Time: {result.time_used}ms, Score: {result.score}")
+
+    # Return full result immediately
+    return {
+        "id": submission.id,
+        "problem_id": submission.problem_id,
+        "language": submission.language,
+        "status": submission.status,
+        "time_used": submission.time_used,
+        "memory_used": submission.memory_used,
+        "score": submission.score,
+        "message": submission.message,
+        "failed_case": submission.failed_case,
+        "created_at": submission.created_at.isoformat()
+    }
+
 async def judge_submission(
     submission_id: int,
     problem_id: str,
@@ -293,6 +350,7 @@ async def judge_submission(
             submission.memory_used = result.memory_used
             submission.score = result.score
             submission.message = result.message
+            submission.failed_case = result.failed_case
             await session.commit()
             print(f"[Judge #{submission_id}] Result: {result.status.value}, Time: {result.time_used}ms, Score: {result.score}")
 
@@ -363,6 +421,7 @@ async def get_submission(submission_id: int, session: AsyncSession = Depends(get
         "memory_used": submission.memory_used,
         "score": submission.score,
         "message": submission.message,
+        "failed_case": submission.failed_case,
         "created_at": submission.created_at.isoformat()
     }
 

@@ -12,12 +12,13 @@ from models import JudgeStatus
 
 class JudgeResult:
     def __init__(self, status: JudgeStatus, time_used: int = 0, memory_used: int = 0,
-                 score: int = 0, message: str = ""):
+                 score: int = 0, message: str = "", failed_case: int = 0):
         self.status = status
         self.time_used = time_used
         self.memory_used = memory_used
         self.score = score
         self.message = message
+        self.failed_case = failed_case
 
 class Judge:
     def __init__(self, problem_id: str, code: str, language: str, submission_id: int = 0):
@@ -157,7 +158,7 @@ class Judge:
         max_memory = 0
         passed = 0
 
-        for input_file in input_files:
+        for idx, input_file in enumerate(input_files, 1):
             output_file = input_file.with_suffix(".out")
             if not output_file.exists():
                 continue
@@ -168,6 +169,7 @@ class Judge:
 
             if result.status != JudgeStatus.ACCEPTED:
                 result.score = int(passed * 100 / len(input_files))
+                result.failed_case = idx
                 return result
 
             total_time = max(total_time, result.time_used)

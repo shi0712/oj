@@ -44,6 +44,7 @@ class Submission(Base):
     memory_used = Column(Integer, default=0)  # KB
     score = Column(Integer, default=0)
     message = Column(Text, default="")
+    failed_case = Column(Integer, default=0)  # Failed test case number (0 if AC)
     created_at = Column(DateTime, default=datetime.utcnow)
 
 async def init_db():
