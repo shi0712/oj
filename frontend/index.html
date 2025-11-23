@@ -1,0 +1,398 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Online Judge</title>
+    <style>
+        * { box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+            background: #f5f5f5;
+        }
+        h1 { color: #333; }
+        .tabs {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 20px;
+        }
+        .tab {
+            padding: 10px 20px;
+            background: #ddd;
+            border: none;
+            cursor: pointer;
+            border-radius: 5px 5px 0 0;
+        }
+        .tab.active { background: #fff; }
+        .panel {
+            display: none;
+            background: #fff;
+            padding: 20px;
+            border-radius: 0 5px 5px 5px;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+        }
+        .panel.active { display: block; }
+        label { display: block; margin: 10px 0 5px; font-weight: bold; }
+        input, select, textarea {
+            width: 100%;
+            padding: 8px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-size: 14px;
+        }
+        textarea { font-family: monospace; min-height: 200px; }
+        button {
+            background: #4CAF50;
+            color: white;
+            padding: 10px 20px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            margin-top: 10px;
+        }
+        button:hover { background: #45a049; }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 20px;
+        }
+        th, td {
+            padding: 10px;
+            text-align: left;
+            border-bottom: 1px solid #ddd;
+        }
+        th { background: #f9f9f9; }
+        .status {
+            padding: 3px 8px;
+            border-radius: 3px;
+            font-size: 12px;
+        }
+        .status-Accepted { background: #4CAF50; color: white; }
+        .status-Pending, .status-Judging { background: #2196F3; color: white; }
+        .status-Wrong { background: #f44336; color: white; }
+        .status-Time, .status-Memory, .status-Runtime, .status-Compile { background: #ff9800; color: white; }
+        .message { margin-top: 10px; padding: 10px; background: #f9f9f9; border-radius: 4px; }
+        .row { display: flex; gap: 20px; }
+        .row > * { flex: 1; }
+        #result { margin-top: 20px; padding: 15px; border-radius: 4px; }
+        .success { background: #e8f5e9; border: 1px solid #4CAF50; }
+        .error { background: #ffebee; border: 1px solid #f44336; }
+    </style>
+</head>
+<body>
+    <h1>Online Judge</h1>
+
+    <div class="tabs">
+        <button class="tab active" onclick="showTab('submit')">提交代码</button>
+        <button class="tab" onclick="showTab('problems')">题目管理</button>
+        <button class="tab" onclick="showTab('submissions')">提交记录</button>
+        <button class="tab" onclick="showTab('config')">编译器配置</button>
+    </div>
+
+    <!-- Submit Code Panel -->
+    <div id="submit" class="panel active">
+        <h2>提交代码</h2>
+        <div class="row">
+            <div>
+                <label>题目ID</label>
+                <input type="text" id="submit-problem" placeholder="例如: A">
+            </div>
+            <div>
+                <label>C++版本</label>
+                <select id="submit-language">
+                    <option value="c++14">GNU G++14</option>
+                    <option value="c++17">GNU G++17</option>
+                    <option value="c++20">GNU G++20</option>
+                    <option value="c++23">GNU G++23</option>
+                </select>
+            </div>
+        </div>
+        <label>源代码</label>
+        <textarea id="submit-code" placeholder="#include <iostream>
+using namespace std;
+int main() {
+    // Your code here
+    return 0;
+}"></textarea>
+        <button onclick="submitCode()">提交</button>
+        <div id="submit-result"></div>
+    </div>
+
+    <!-- Problems Panel -->
+    <div id="problems" class="panel">
+        <h2>上传题目</h2>
+        <div class="row">
+            <div>
+                <label>题目ID</label>
+                <input type="text" id="problem-id" placeholder="例如: A">
+            </div>
+            <div>
+                <label>题目标题</label>
+                <input type="text" id="problem-title" placeholder="A + B Problem">
+            </div>
+        </div>
+        <div class="row">
+            <div>
+                <label>时间限制 (ms)</label>
+                <input type="number" id="problem-time" value="1000">
+            </div>
+            <div>
+                <label>空间限制 (MB)</label>
+                <input type="number" id="problem-memory" value="256">
+            </div>
+        </div>
+        <label>测试数据 (ZIP文件，包含 .in 和 .out 文件)</label>
+        <input type="file" id="problem-testcases" accept=".zip">
+        <label>SPJ Checker (可选，checker.cpp)</label>
+        <input type="file" id="problem-checker" accept=".cpp">
+        <button onclick="uploadProblem()">上传题目</button>
+        <div id="upload-result"></div>
+
+        <h3>题目列表</h3>
+        <table>
+            <thead>
+                <tr>
+                    <th>ID</th>
+                    <th>标题</th>
+                    <th>时间限制</th>
+                    <th>空间限制</th>
+                    <th>测试点</th>
+                    <th>SPJ</th>
+                    <th>操作</th>
+                </tr>
+            </thead>
+            <tbody id="problems-list"></tbody>
+        </table>
+    </div>
+
+    <!-- Submissions Panel -->
+    <div id="submissions" class="panel">
+        <h2>提交记录</h2>
+        <button onclick="loadSubmissions()">刷新</button>
+        <table>
+            <thead>
+                <tr>
+                    <th>ID</th>
+                    <th>题目</th>
+                    <th>语言</th>
+                    <th>状态</th>
+                    <th>时间</th>
+                    <th>分数</th>
+                    <th>提交时间</th>
+                </tr>
+            </thead>
+            <tbody id="submissions-list"></tbody>
+        </table>
+        <div id="submission-detail" class="message" style="display:none;"></div>
+    </div>
+
+    <!-- Config Panel -->
+    <div id="config" class="panel">
+        <h2>编译器配置</h2>
+        <p>配置各版本g++的路径</p>
+        <div id="compiler-configs"></div>
+        <div id="config-result"></div>
+    </div>
+
+    <script>
+        // Tab switching
+        function showTab(name) {
+            document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+            document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+            document.querySelector(`[onclick="showTab('${name}')"]`).classList.add('active');
+            document.getElementById(name).classList.add('active');
+
+            if (name === 'problems') loadProblems();
+            if (name === 'submissions') loadSubmissions();
+            if (name === 'config') loadConfig();
+        }
+
+        // Submit code
+        async function submitCode() {
+            const form = new FormData();
+            form.append('problem_id', document.getElementById('submit-problem').value);
+            form.append('code', document.getElementById('submit-code').value);
+            form.append('language', document.getElementById('submit-language').value);
+
+            try {
+                const res = await fetch('/api/submit', { method: 'POST', body: form });
+                const data = await res.json();
+
+                if (res.ok) {
+                    showResult('submit-result', `提交成功! ID: ${data.submission_id}`, true);
+                    pollSubmission(data.submission_id);
+                } else {
+                    showResult('submit-result', data.detail || '提交失败', false);
+                }
+            } catch (e) {
+                showResult('submit-result', '网络错误', false);
+            }
+        }
+
+        // Poll submission status
+        async function pollSubmission(id) {
+            const poll = async () => {
+                const res = await fetch(`/api/submissions/${id}`);
+                const data = await res.json();
+
+                let statusClass = 'status-' + data.status.split(' ')[0];
+                let html = `<strong>状态:</strong> <span class="status ${statusClass}">${data.status}</span>`;
+                html += ` | <strong>时间:</strong> ${data.time_used}ms | <strong>分数:</strong> ${data.score}`;
+                if (data.message) {
+                    html += `<br><strong>信息:</strong><pre style="margin:5px 0;padding:10px;background:#f0f0f0;overflow-x:auto;white-space:pre-wrap;word-wrap:break-word;font-size:12px;">${data.message}</pre>`;
+                }
+
+                document.getElementById('submit-result').innerHTML = html;
+                document.getElementById('submit-result').className = data.status === 'Accepted' ? 'success' : 'error';
+
+                if (data.status === 'Pending' || data.status === 'Judging') {
+                    setTimeout(poll, 1000);
+                }
+            };
+            poll();
+        }
+
+        // Upload problem
+        async function uploadProblem() {
+            const form = new FormData();
+            form.append('problem_id', document.getElementById('problem-id').value);
+            form.append('title', document.getElementById('problem-title').value);
+            form.append('time_limit', document.getElementById('problem-time').value);
+            form.append('memory_limit', document.getElementById('problem-memory').value);
+
+            const testcases = document.getElementById('problem-testcases').files[0];
+            if (!testcases) {
+                showResult('upload-result', '请选择测试数据文件', false);
+                return;
+            }
+            form.append('testcases', testcases);
+
+            const checker = document.getElementById('problem-checker').files[0];
+            if (checker) form.append('checker', checker);
+
+            try {
+                const res = await fetch('/api/problems', { method: 'POST', body: form });
+                const data = await res.json();
+
+                if (res.ok) {
+                    showResult('upload-result', `上传成功! 测试点: ${data.test_case_count}, SPJ: ${data.has_checker}`, true);
+                    loadProblems();
+                } else {
+                    showResult('upload-result', data.detail || '上传失败', false);
+                }
+            } catch (e) {
+                showResult('upload-result', '网络错误', false);
+            }
+        }
+
+        // Load problems
+        async function loadProblems() {
+            const res = await fetch('/api/problems');
+            const problems = await res.json();
+
+            const tbody = document.getElementById('problems-list');
+            tbody.innerHTML = problems.map(p => `
+                <tr>
+                    <td>${p.id}</td>
+                    <td>${p.title}</td>
+                    <td>${p.time_limit}ms</td>
+                    <td>${p.memory_limit}MB</td>
+                    <td>${p.test_case_count}</td>
+                    <td>${p.has_checker ? '✓' : ''}</td>
+                    <td><button onclick="deleteProblem('${p.id}')" style="background:#f44336">删除</button></td>
+                </tr>
+            `).join('');
+        }
+
+        // Delete problem
+        async function deleteProblem(id) {
+            if (!confirm(`确定删除题目 ${id}?`)) return;
+            await fetch(`/api/problems/${id}`, { method: 'DELETE' });
+            loadProblems();
+        }
+
+        // Load submissions
+        async function loadSubmissions() {
+            const res = await fetch('/api/submissions');
+            const submissions = await res.json();
+
+            const tbody = document.getElementById('submissions-list');
+            tbody.innerHTML = submissions.map(s => {
+                let statusClass = 'status-' + s.status.split(' ')[0];
+                return `
+                    <tr onclick="showSubmissionDetail(${s.id})" style="cursor:pointer">
+                        <td>${s.id}</td>
+                        <td>${s.problem_id}</td>
+                        <td>${s.language}</td>
+                        <td><span class="status ${statusClass}">${s.status}</span></td>
+                        <td>${s.time_used}ms</td>
+                        <td>${s.score}</td>
+                        <td>${new Date(s.created_at).toLocaleString()}</td>
+                    </tr>
+                `;
+            }).join('');
+        }
+
+        // Show submission detail
+        async function showSubmissionDetail(id) {
+            const res = await fetch(`/api/submissions/${id}`);
+            const s = await res.json();
+
+            const detail = document.getElementById('submission-detail');
+            detail.style.display = 'block';
+            detail.innerHTML = `
+                <strong>提交 #${s.id}</strong><br>
+                状态: ${s.status}<br>
+                时间: ${s.time_used}ms<br>
+                分数: ${s.score}<br>
+                ${s.message ? `信息: ${s.message}` : ''}
+            `;
+        }
+
+        // Load compiler config
+        async function loadConfig() {
+            const res = await fetch('/api/languages');
+            const langs = await res.json();
+
+            const container = document.getElementById('compiler-configs');
+            container.innerHTML = Object.entries(langs).map(([lang, cfg]) => `
+                <div style="margin-bottom:15px">
+                    <label>${lang.toUpperCase()} (${cfg.bits}bit)</label>
+                    <div style="display:flex;gap:10px">
+                        <input type="text" id="path-${lang}" placeholder="g++路径，例如: C:/mingw64/bin/g++.exe">
+                        <button onclick="setCompilerPath('${lang}')">设置</button>
+                    </div>
+                </div>
+            `).join('');
+        }
+
+        // Set compiler path
+        async function setCompilerPath(lang) {
+            const path = document.getElementById(`path-${lang}`).value;
+            const form = new FormData();
+            form.append('language', lang);
+            form.append('path', path);
+
+            const res = await fetch('/api/config/compiler', { method: 'POST', body: form });
+            const data = await res.json();
+
+            showResult('config-result', res.ok ? `${lang} 编译器设置成功` : '设置失败', res.ok);
+        }
+
+        // Show result message
+        function showResult(elementId, message, success) {
+            const el = document.getElementById(elementId);
+            el.innerHTML = message;
+            el.className = success ? 'success' : 'error';
+            el.style.marginTop = '10px';
+            el.style.padding = '10px';
+        }
+
+        // Initial load
+        loadProblems();
+    </script>
+</body>
+</html>
