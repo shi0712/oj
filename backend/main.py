@@ -11,7 +11,7 @@ import zipfile
 import os
 from pathlib import Path
 
-from config import PROBLEMS_DIR, MAX_CONCURRENT_JUDGES, COMPILERS
+from config import PROBLEMS_DIR, MAX_CONCURRENT_JUDGES, COMPILERS, MAX_INPUT_SIZE
 from models import init_db, get_session, Problem, Submission, JudgeStatus
 from judge import Judge
 
@@ -298,6 +298,54 @@ async def judge_submission(
 
 # Import async_session for background task
 from models import async_session
+
+# ===== Hack API =====
+
+@app.post("/api/hack")
+async def hack(
+    problem_id: str = Form(...),
+    code: str = Form(...),
+    language: str = Form(...),
+    input_data: str = Form(...),
+    std_code: Optional[str] = Form(None),
+    session: AsyncSession = Depends(get_session)
+):
+    """
+    Hack/test code with custom input and std code.
+    Compiles and runs both user code and std code, then compares output.
+    If problem has checker, use checker to validate.
+    """
+    # Validate input size
+    if len(input_data.encode('utf-8')) > MAX_INPUT_SIZE:
+        raise HTTPException(400, f"Input data too large (max {MAX_INPUT_SIZE / 1024 / 1024}MB)")
+
+    # Validate problem
+    problem = await session.get(Problem, problem_id)
+    if not problem:
+        raise HTTPException(404, "Problem not found")
+
+    # Validate language
+    if language not in COMPILERS:
+        raise HTTPException(400, f"Unsupported language. Available: {list(COMPILERS.keys())}")
+
+    print(f"[Hack] Problem: {problem_id}, Language: {language}")
+
+    # Run hack
+    from judge import Judge
+    judge = Judge(problem_id, code, language, submission_id=0)
+    result = await judge.hack(
+        input_data,
+        std_code,
+        problem.time_limit,
+        problem.memory_limit,
+        problem.has_checker
+    )
+
+    return {
+        "status": result.status.value,
+        "time_used": result.time_used,
+        "output": result.message,
+    }
 
 @app.get("/api/submissions/{submission_id}")
 async def get_submission(submission_id: int, session: AsyncSession = Depends(get_session)):

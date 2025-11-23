@@ -42,6 +42,7 @@ COMPILERS = {
 MAX_CONCURRENT_JUDGES = 4
 DEFAULT_TIME_LIMIT = 1000  # ms
 DEFAULT_MEMORY_LIMIT = 256  # MB
+MAX_INPUT_SIZE = 10 * 1024 * 1024  # 10MB max input data for hack
 
 # Database
 DATABASE_URL = f"sqlite+aiosqlite:///{DATA_DIR}/oj.db"

@@ -276,3 +276,132 @@ class Judge:
             return user_lines == expected_lines
         except:
             return False
+
+    async def hack(self, input_data: str, std_code: str, time_limit: int,
+                   memory_limit: int, has_checker: bool) -> JudgeResult:
+        """
+        Hack: test code with custom input and std code.
+        Returns user output and comparison result.
+        """
+        self.work_dir = Path(tempfile.mkdtemp(prefix="oj_hack_"))
+        print(f"[Hack] Problem: {self.problem_id}, Language: {self.language}")
+
+        try:
+            # Compile user code
+            print("[Hack] Compiling user code...")
+            compile_result = await self._compile()
+            if compile_result.status != JudgeStatus.ACCEPTED:
+                return JudgeResult(JudgeStatus.COMPILE_ERROR, message=compile_result.message)
+
+            user_exe = self.work_dir / "main.exe"
+
+            # Compile std code if provided
+            std_exe = None
+            if std_code:
+                print("[Hack] Compiling std code...")
+                std_source = self.work_dir / "std.cpp"
+                std_exe = self.work_dir / "std.exe"
+                std_source.write_text(std_code, encoding="utf-8")
+
+                # Always use C++23 for std code
+                compiler = COMPILERS.get("c++23", COMPILERS.get("c++17", COMPILERS["c++14"]))
+                libs = compiler.get("libs", [])
+                cmd = [compiler["path"]] + compiler["args"] + [str(std_source), "-o", str(std_exe)] + libs
+
+                compiler_bin_dir = str(Path(compiler["path"]).parent)
+                env = os.environ.copy()
+                env["PATH"] = compiler_bin_dir + os.pathsep + env.get("PATH", "")
+
+                process = await asyncio.create_subprocess_exec(
+                    *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+                    cwd=str(self.work_dir), env=env
+                )
+                _, stderr = await asyncio.wait_for(process.communicate(), timeout=30)
+                if process.returncode != 0:
+                    return JudgeResult(JudgeStatus.SYSTEM_ERROR,
+                                       message=f"Std compile error: {stderr.decode()[:500]}")
+
+            # Compile checker if needed
+            if has_checker:
+                checker_result = await self._compile_checker()
+                if checker_result.status != JudgeStatus.ACCEPTED:
+                    return JudgeResult(JudgeStatus.SYSTEM_ERROR, message="Checker compile error")
+
+            # Write input
+            input_file = self.work_dir / "input.in"
+            input_file.write_text(input_data, encoding="utf-8")
+
+            # Run user code
+            print("[Hack] Running user code...")
+            user_output_file = self.work_dir / "user.out"
+            user_result = await self._run_program(user_exe, input_file, user_output_file, time_limit)
+
+            if user_result.status != JudgeStatus.ACCEPTED:
+                user_result.message = f"User: {user_result.status.value}\n{user_result.message}"
+                return user_result
+
+            user_output = user_output_file.read_text(encoding="utf-8", errors="replace")
+
+            # Run std code if provided
+            expected_output_file = self.work_dir / "expected.out"
+            if std_exe:
+                print("[Hack] Running std code...")
+                std_result = await self._run_program(std_exe, input_file, expected_output_file, time_limit)
+                if std_result.status != JudgeStatus.ACCEPTED:
+                    return JudgeResult(JudgeStatus.SYSTEM_ERROR,
+                                       message=f"Std: {std_result.status.value}")
+
+            # Compare results
+            if has_checker and expected_output_file.exists():
+                check_result = await self._run_checker(input_file, user_output_file, expected_output_file)
+                check_result.message = f"User Output:\n{user_output[:2000]}\n\nChecker: {check_result.message}"
+                check_result.time_used = user_result.time_used
+                return check_result
+            elif expected_output_file.exists():
+                expected_output = expected_output_file.read_text(encoding="utf-8", errors="replace")
+                if self._compare_output(user_output_file, expected_output_file):
+                    return JudgeResult(JudgeStatus.ACCEPTED, time_used=user_result.time_used,
+                                       message=f"User Output:\n{user_output[:2000]}")
+                else:
+                    return JudgeResult(JudgeStatus.WRONG_ANSWER, time_used=user_result.time_used,
+                                       message=f"User Output:\n{user_output[:1000]}\n\nExpected:\n{expected_output[:1000]}")
+            else:
+                # No std, just return output
+                return JudgeResult(JudgeStatus.ACCEPTED, time_used=user_result.time_used,
+                                   message=f"Output:\n{user_output[:2000]}")
+
+        finally:
+            if self.work_dir and self.work_dir.exists():
+                shutil.rmtree(self.work_dir, ignore_errors=True)
+
+    async def _run_program(self, exe_file: Path, input_file: Path, output_file: Path,
+                           time_limit: int) -> JudgeResult:
+        """Run a program with input and capture output"""
+        try:
+            with open(input_file, "rb") as fin, open(output_file, "wb") as fout:
+                start_time = time.perf_counter()
+                process = await asyncio.create_subprocess_exec(
+                    str(exe_file),
+                    stdin=fin, stdout=fout, stderr=asyncio.subprocess.PIPE,
+                    cwd=str(self.work_dir)
+                )
+                try:
+                    _, stderr = await asyncio.wait_for(
+                        process.communicate(), timeout=time_limit / 1000.0 + 0.5
+                    )
+                except asyncio.TimeoutError:
+                    process.kill()
+                    return JudgeResult(JudgeStatus.TIME_LIMIT, time_used=time_limit)
+
+                elapsed_ms = int((time.perf_counter() - start_time) * 1000)
+
+                if process.returncode != 0:
+                    return JudgeResult(JudgeStatus.RUNTIME_ERROR, time_used=elapsed_ms,
+                                       message=f"Exit code: {process.returncode}")
+
+                if elapsed_ms > time_limit:
+                    return JudgeResult(JudgeStatus.TIME_LIMIT, time_used=elapsed_ms)
+
+                return JudgeResult(JudgeStatus.ACCEPTED, time_used=elapsed_ms)
+        except Exception as e:
+            return JudgeResult(JudgeStatus.SYSTEM_ERROR, message=str(e))

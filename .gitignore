@@ -1,3 +1,6 @@
 .claude
 data
-compilers/*
+compilers/c++14
+compilers/c++17
+compilers/c++20
+compilers/c++23
