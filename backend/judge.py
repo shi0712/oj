@@ -3,12 +3,17 @@ import subprocess
 import os
 import tempfile
 import shutil
+import hashlib
 from pathlib import Path
 from typing import Optional
 import time
 
-from config import COMPILERS, PROBLEMS_DIR, TESTLIB_DIR
+from config import COMPILERS, PROBLEMS_DIR, TESTLIB_DIR, DATA_DIR
 from models import JudgeStatus
+
+# 编译缓存目录
+EXE_CACHE_DIR = DATA_DIR / "exe_cache"
+EXE_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
 class JudgeResult:
     def __init__(self, status: JudgeStatus, time_used: int = 0, memory_used: int = 0,
@@ -60,6 +65,17 @@ class Judge:
             return JudgeResult(JudgeStatus.SYSTEM_ERROR, message=f"Unknown language: {self.language}")
 
         compiler = COMPILERS[self.language]
+
+        # 计算代码哈希，用于缓存
+        code_hash = hashlib.md5((self.code + self.language).encode()).hexdigest()
+        cached_exe = EXE_CACHE_DIR / f"{code_hash}.exe"
+        self.cached_exe_path = cached_exe  # 保存缓存路径，供评测时直接使用
+
+        # 如果缓存存在，直接使用（不复制）
+        if cached_exe.exists():
+            print(f"[Judge #{self.submission_id}] Using cached exe: {code_hash[:8]}...")
+            return JudgeResult(JudgeStatus.ACCEPTED)
+
         source_file = self.work_dir / "main.cpp"
         exe_file = self.work_dir / "main.exe"
 
@@ -89,6 +105,10 @@ class Judge:
             if process.returncode != 0:
                 error_msg = stderr.decode("utf-8", errors="replace")
                 return JudgeResult(JudgeStatus.COMPILE_ERROR, message=error_msg[:2000])
+
+            # 缓存编译好的 exe
+            shutil.copy(exe_file, cached_exe)
+            print(f"[Judge #{self.submission_id}] Cached exe: {code_hash[:8]}...")
 
             return JudgeResult(JudgeStatus.ACCEPTED)
         except asyncio.TimeoutError:
@@ -158,6 +178,12 @@ class Judge:
         max_memory = 0
         passed = 0
 
+        # 预热：运行第一个测试点预热程序（解决 C++17 冷启动问题）
+        if len(input_files) > 0:
+            print(f"[Judge #{self.submission_id}] Warming up (pre-run first test)...")
+            first_input = input_files[0]
+            await self._warmup_run(first_input)
+
         for idx, input_file in enumerate(input_files, 1):
             output_file = input_file.with_suffix(".out")
             if not output_file.exists():
@@ -184,9 +210,34 @@ class Judge:
             message=f"Passed {passed}/{len(input_files)} test cases"
         )
 
+    async def _warmup_run(self, input_file: Path):
+        """预热运行：执行一次程序但不计入结果（解决冷启动）"""
+        exe_file = getattr(self, 'cached_exe_path', self.work_dir / "main.exe")
+        print(f"[Judge #{self.submission_id}] Warmup: running {exe_file}")
+        start_time = time.perf_counter()
+        try:
+            with open(input_file, "rb") as fin:
+                process = await asyncio.create_subprocess_exec(
+                    str(exe_file),
+                    stdin=fin,
+                    stdout=asyncio.subprocess.DEVNULL,
+                    stderr=asyncio.subprocess.DEVNULL,
+                    cwd=str(self.work_dir)
+                )
+                try:
+                    await asyncio.wait_for(process.communicate(), timeout=5)
+                    elapsed = (time.perf_counter() - start_time) * 1000
+                    print(f"[Judge #{self.submission_id}] Warmup completed in {elapsed:.0f}ms")
+                except asyncio.TimeoutError:
+                    process.kill()
+                    await process.wait()
+                    print(f"[Judge #{self.submission_id}] Warmup timed out (5s)")
+        except Exception as e:
+            print(f"[Judge #{self.submission_id}] Warmup failed: {e}")
+
     async def _run_single_test(self, input_file: Path, expected_output: Path,
                                 time_limit: int, memory_limit: int, has_checker: bool) -> JudgeResult:
-        exe_file = self.work_dir / "main.exe"
+        exe_file = getattr(self, 'cached_exe_path', self.work_dir / "main.exe")
         user_output = self.work_dir / "user.out"
 
         try:

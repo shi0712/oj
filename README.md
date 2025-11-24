@@ -38,26 +38,143 @@ python main.py
 ### 题目管理
 
 - `POST /api/problems` - 上传题目
-  - `problem_id`: 题目ID
-  - `title`: 标题
-  - `time_limit`: 时间限制(ms)
-  - `memory_limit`: 空间限制(MB)
-  - `testcases`: ZIP文件(包含.in和.out)
-  - `checker`: checker.cpp (可选)
+  - 参数:
+    - `problem_id`: 题目ID
+    - `title`: 标题
+    - `time_limit`: 时间限制(ms)
+    - `memory_limit`: 空间限制(MB)
+    - `testcases`: ZIP文件(包含.in和.out)
+    - `checker`: checker.cpp (可选)
+  - 返回:
+    ```json
+    {
+      "success": true,
+      "problem_id": "A",
+      "test_case_count": 10,
+      "has_checker": true
+    }
+    ```
 
 - `GET /api/problems` - 获取题目列表
+  - 返回:
+    ```json
+    [
+      {
+        "id": "A",
+        "title": "A+B Problem",
+        "time_limit": 1000,
+        "memory_limit": 256,
+        "test_case_count": 10,
+        "has_checker": false
+      }
+    ]
+    ```
+
 - `GET /api/problems/{id}` - 获取题目详情
+  - 返回:
+    ```json
+    {
+      "id": "A",
+      "title": "A+B Problem",
+      "time_limit": 1000,
+      "memory_limit": 256,
+      "test_case_count": 10,
+      "has_checker": false
+    }
+    ```
+
 - `DELETE /api/problems/{id}` - 删除题目
+  - 返回:
+    ```json
+    {
+      "success": true
+    }
+    ```
 
 ### 提交评测
 
-- `POST /api/submit` - 提交代码
-  - `problem_id`: 题目ID
-  - `code`: 源代码
-  - `language`: c++14/c++17/c++20/c++23
+- `POST /api/submit` - 提交代码(异步)
+  - 参数:
+    - `problem_id`: 题目ID
+    - `code`: 源代码
+    - `language`: c++14/c++17/c++20/c++23
+  - 返回:
+    ```json
+    {
+      "submission_id": 123,
+      "status": "Pending"
+    }
+    ```
+  - 说明: 提交后立即返回,需要轮询`GET /api/submissions/{id}`获取评测结果
+
+- `POST /api/submit/sync` - 提交代码(同步)
+  - 参数:
+    - `problem_id`: 题目ID
+    - `code`: 源代码
+    - `language`: c++14/c++17/c++20/c++23
+  - 返回:
+    ```json
+    {
+      "id": 123,
+      "problem_id": "A",
+      "language": "c++17",
+      "status": "Accepted",
+      "time_used": 15,
+      "memory_used": 0,
+      "score": 100,
+      "message": "Passed 10/10 test cases",
+      "failed_case": 0,
+      "created_at": "2025-01-23T12:34:56"
+    }
+    ```
+  - 说明: 等待评测完成后返回完整结果,适合单次提交测试。`failed_case`为失败的测试点编号(从1开始),0表示全部通过
 
 - `GET /api/submissions/{id}` - 获取评测结果
+  - 返回:
+    ```json
+    {
+      "id": 123,
+      "problem_id": "A",
+      "language": "c++17",
+      "status": "Accepted",
+      "time_used": 15,
+      "memory_used": 0,
+      "score": 100,
+      "message": "Passed 10/10 test cases",
+      "failed_case": 0,
+      "created_at": "2025-01-23T12:34:56"
+    }
+    ```
+  - `failed_case`字段说明: 失败的测试点编号(从1开始),0表示全部通过
+  - 可能的status值:
+    - `Pending` - 等待评测
+    - `Judging` - 评测中
+    - `Accepted` - 通过
+    - `Wrong Answer` - 答案错误
+    - `Time Limit Exceeded` - 超时
+    - `Memory Limit Exceeded` - 内存超限
+    - `Runtime Error` - 运行时错误
+    - `Compile Error` - 编译错误
+    - `System Error` - 系统错误
+
 - `GET /api/submissions` - 获取提交列表
+  - 参数(可选):
+    - `problem_id`: 筛选指定题目
+    - `limit`: 返回数量限制(默认50)
+  - 返回:
+    ```json
+    [
+      {
+        "id": 123,
+        "problem_id": "A",
+        "language": "c++17",
+        "status": "Accepted",
+        "time_used": 15,
+        "score": 100,
+        "created_at": "2025-01-23T12:34:56"
+      }
+    ]
+    ```
 
 ### Hack测试
 
