@@ -1,7 +1,11 @@
 .claude
+.vscode
 data
 compilers/c++14
 compilers/c++17
 compilers/c++20
 compilers/c++23
 nul
+output_filtered
+failed_codes
+*.json

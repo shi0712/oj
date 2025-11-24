@@ -39,7 +39,7 @@ COMPILERS = {
 }
 
 # Judge settings
-MAX_CONCURRENT_JUDGES = 8
+MAX_CONCURRENT_JUDGES = 4  # 降低并发避免CPU竞争导致TLE
 DEFAULT_TIME_LIMIT = 1000  # ms
 DEFAULT_MEMORY_LIMIT = 256  # MB
 MAX_INPUT_SIZE = 10 * 1024 * 1024  # 10MB max input data for hack

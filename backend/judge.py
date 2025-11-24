@@ -106,9 +106,18 @@ class Judge:
                 error_msg = stderr.decode("utf-8", errors="replace")
                 return JudgeResult(JudgeStatus.COMPILE_ERROR, message=error_msg[:2000])
 
-            # 缓存编译好的 exe
-            shutil.copy(exe_file, cached_exe)
-            print(f"[Judge #{self.submission_id}] Cached exe: {code_hash[:8]}...")
+            # 缓存编译好的 exe（使用原子操作避免竞争）
+            # 先复制到临时文件，再重命名
+            temp_exe = EXE_CACHE_DIR / f"{code_hash}_{self.submission_id}.tmp"
+            try:
+                shutil.copy(exe_file, temp_exe)
+                # 原子重命名（如果目标已存在会覆盖，这是安全的）
+                temp_exe.replace(cached_exe)
+                print(f"[Judge #{self.submission_id}] Cached exe: {code_hash[:8]}...")
+            except Exception as e:
+                # 缓存失败不影响评测，继续使用本地exe
+                print(f"[Judge #{self.submission_id}] Cache failed: {e}")
+                self.cached_exe_path = exe_file
 
             return JudgeResult(JudgeStatus.ACCEPTED)
         except asyncio.TimeoutError:
@@ -192,6 +201,14 @@ class Judge:
             result = await self._run_single_test(
                 input_file, output_file, time_limit, memory_limit, has_checker
             )
+
+            # 第一个测试点TLE时自动重试（可能是冷启动问题）
+            if idx == 1 and result.status == JudgeStatus.TIME_LIMIT:
+                print(f"[Judge #{self.submission_id}] Test 1 TLE, retrying (cold start issue)...")
+                await self._warmup_run(input_file)
+                result = await self._run_single_test(
+                    input_file, output_file, time_limit, memory_limit, has_checker
+                )
 
             if result.status != JudgeStatus.ACCEPTED:
                 result.score = int(passed * 100 / len(input_files))

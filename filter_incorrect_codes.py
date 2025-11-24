@@ -159,10 +159,11 @@ async def upload_problem(problem_id: str, test_cases: list, checker: str = None,
                         return False
 
 
-async def test_code_all_versions_async(problem_id: str, code: str) -> dict:
+async def test_code_all_versions_async(problem_id: str, code: str, max_retries: int = 2) -> dict:
     """
     异步测试代码在所有C++版本上的表现
     从c++14到c++23顺序测试，一旦某个版本失败（非CE）就立即停止
+    System Error 会自动重试（TLE重试已在OJ内部处理）
 
     Returns:
         {
@@ -176,15 +177,24 @@ async def test_code_all_versions_async(problem_id: str, code: str) -> dict:
     version_results = {}
 
     for version in CPP_VERSIONS:
-        result = await submitter.submit_code_async(
-            problem_id=problem_id,
-            code=code,
-            language=version
-        )
+        # System Error 自动重试
+        for retry in range(max_retries):
+            result = await submitter.submit_code_async(
+                problem_id=problem_id,
+                code=code,
+                language=version
+            )
 
-        verdict = result.get("verdict", "System Error")
-        passed = result.get("passed", False)
-        failed_test = result.get("failed_test")
+            verdict = result.get("verdict", "System Error")
+            passed = result.get("passed", False)
+            failed_test = result.get("failed_test")
+
+            # 只对 System Error 重试
+            if verdict != "System Error":
+                break
+
+            if retry < max_retries - 1:
+                await asyncio.sleep(0.5)
 
         version_results[version] = {
             "verdict": verdict,
@@ -255,7 +265,7 @@ def save_failed_code(problem_id: str, code: str, index: int, fail_info: dict):
             f.write(f"Failed test: {fail_info['failed_test']}\n")
 
 
-async def filter_incorrect_codes_async(problem_id: str, incorrect_codes: List[str], max_concurrent: int = 8) -> List[str]:
+async def filter_incorrect_codes_async(problem_id: str, incorrect_codes: List[str], max_concurrent: int = 2) -> List[str]:
     """
     异步并发过滤 incorrect_codes 列表
     失败的代码会保存到 failed_codes_dir/{problem_id}/ 目录
@@ -263,7 +273,7 @@ async def filter_incorrect_codes_async(problem_id: str, incorrect_codes: List[st
     Args:
         problem_id: 题目ID
         incorrect_codes: 待测试的代码列表
-        max_concurrent: 最大并发数（默认8）
+        max_concurrent: 最大并发数（默认2，避免CPU竞争）
     """
     filtered_codes = []
     failed_code_count = 0
@@ -325,7 +335,7 @@ def filter_incorrect_codes(problem_id: str, incorrect_codes: List[str]) -> List[
     asyncio.set_event_loop(loop)
     try:
         return loop.run_until_complete(
-            filter_incorrect_codes_async(problem_id, incorrect_codes, max_concurrent=8)
+            filter_incorrect_codes_async(problem_id, incorrect_codes, max_concurrent=2)
         )
     finally:
         loop.close()
