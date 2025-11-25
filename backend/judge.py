@@ -4,6 +4,7 @@ import os
 import tempfile
 import shutil
 import hashlib
+import gc
 from pathlib import Path
 from typing import Optional
 import time
@@ -11,9 +12,52 @@ import time
 from config import COMPILERS, PROBLEMS_DIR, TESTLIB_DIR, DATA_DIR
 from models import JudgeStatus
 
+# 最大输出大小 (10MB)
+MAX_OUTPUT_SIZE = 10 * 1024 * 1024
+
 # 编译缓存目录
 EXE_CACHE_DIR = DATA_DIR / "exe_cache"
 EXE_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+
+# 缓存清理计数器（每100次评测清理一次）
+_judge_count = 0
+_judge_count_lock = asyncio.Lock()
+
+async def _cleanup_cache_if_needed():
+    """定期清理exe缓存，避免累积过多"""
+    global _judge_count
+    async with _judge_count_lock:
+        _judge_count += 1
+        if _judge_count >= 100:
+            _judge_count = 0
+            try:
+                # 只清理.tmp文件和超过1小时未使用的.exe文件
+                import time as time_module
+                now = time_module.time()
+                cleaned_tmp = 0
+                cleaned_old = 0
+
+                for file in EXE_CACHE_DIR.iterdir():
+                    if file.suffix == '.tmp':
+                        try:
+                            file.unlink()
+                            cleaned_tmp += 1
+                        except:
+                            pass
+                    elif file.suffix == '.exe':
+                        # 删除超过1小时未访问的exe
+                        try:
+                            if now - file.stat().st_atime > 3600:
+                                file.unlink()
+                                cleaned_old += 1
+                        except:
+                            pass
+
+                if cleaned_tmp > 0 or cleaned_old > 0:
+                    print(f"[Cache] Cleaned {cleaned_tmp} tmp files, {cleaned_old} old exe files")
+                    gc.collect()
+            except Exception as e:
+                print(f"[Cache] Cleanup failed: {e}")
 
 class JudgeResult:
     def __init__(self, status: JudgeStatus, time_used: int = 0, memory_used: int = 0,
@@ -35,6 +79,9 @@ class Judge:
         self.work_dir: Optional[Path] = None
 
     async def run(self, time_limit: int, memory_limit: int, has_checker: bool) -> JudgeResult:
+        # Periodic cache cleanup
+        await _cleanup_cache_if_needed()
+
         # Create temp working directory
         self.work_dir = Path(tempfile.mkdtemp(prefix="oj_judge_"))
         print(f"[Judge #{self.submission_id}] Problem: {self.problem_id}, Language: {self.language}")
@@ -59,6 +106,8 @@ class Judge:
             # Cleanup
             if self.work_dir and self.work_dir.exists():
                 shutil.rmtree(self.work_dir, ignore_errors=True)
+            # 手动触发垃圾回收
+            gc.collect()
 
     async def _compile(self) -> JudgeResult:
         if self.language not in COMPILERS:
@@ -118,6 +167,13 @@ class Judge:
                 # 缓存失败不影响评测，继续使用本地exe
                 print(f"[Judge #{self.submission_id}] Cache failed: {e}")
                 self.cached_exe_path = exe_file
+            finally:
+                # 确保临时文件被删除（即使重命名失败）
+                if temp_exe.exists():
+                    try:
+                        temp_exe.unlink()
+                    except:
+                        pass
 
             return JudgeResult(JudgeStatus.ACCEPTED)
         except asyncio.TimeoutError:
@@ -179,7 +235,7 @@ class Judge:
             return JudgeResult(JudgeStatus.SYSTEM_ERROR, message="Test cases not found")
 
         # Get all test cases
-        input_files = sorted(test_dir.glob("*.in"))
+        input_files = sorted(test_dir.glob("*.in"), key=lambda p: int(p.stem))
         if not input_files:
             return JudgeResult(JudgeStatus.SYSTEM_ERROR, message="No test cases")
 
@@ -202,13 +258,16 @@ class Judge:
                 input_file, output_file, time_limit, memory_limit, has_checker
             )
 
-            # 第一个测试点TLE时自动重试（可能是冷启动问题）
-            if idx == 1 and result.status == JudgeStatus.TIME_LIMIT:
-                print(f"[Judge #{self.submission_id}] Test 1 TLE, retrying (cold start issue)...")
-                await self._warmup_run(input_file)
-                result = await self._run_single_test(
-                    input_file, output_file, time_limit, memory_limit, has_checker
-                )
+            # TLE时自动重试2次（可能是并发导致的内存/CPU竞争）
+            if result.status == JudgeStatus.TIME_LIMIT:
+                for retry in range(2):
+                    print(f"[Judge #{self.submission_id}] Test {idx} TLE, retry {retry+1}/2...")
+                    await asyncio.sleep(0.2)  # 等待其他任务完成
+                    result = await self._run_single_test(
+                        input_file, output_file, time_limit, memory_limit, has_checker
+                    )
+                    if result.status != JudgeStatus.TIME_LIMIT:
+                        break
 
             if result.status != JudgeStatus.ACCEPTED:
                 result.score = int(passed * 100 / len(input_files))
@@ -275,6 +334,8 @@ class Judge:
                         process.communicate(),
                         timeout=time_limit / 1000.0 + 0.5
                     )
+                    # 清理 stderr 缓冲区
+                    del stderr
                 except asyncio.TimeoutError:
                     process.kill()
                     return JudgeResult(JudgeStatus.TIME_LIMIT, time_used=time_limit)
@@ -288,6 +349,14 @@ class Judge:
 
                 if elapsed_ms > time_limit:
                     return JudgeResult(JudgeStatus.TIME_LIMIT, time_used=elapsed_ms)
+
+            # Check output size
+            if user_output.exists():
+                output_size = user_output.stat().st_size
+                if output_size > MAX_OUTPUT_SIZE:
+                    return JudgeResult(JudgeStatus.RUNTIME_ERROR,
+                                       time_used=elapsed_ms,
+                                       message=f"Output too large: {output_size} bytes (limit: {MAX_OUTPUT_SIZE})")
 
             # Check output
             if has_checker:
@@ -324,7 +393,10 @@ class Judge:
                 return JudgeResult(JudgeStatus.ACCEPTED)
             else:
                 msg = stderr.decode("utf-8", errors="replace") or stdout.decode("utf-8", errors="replace")
-                return JudgeResult(JudgeStatus.WRONG_ANSWER, message=msg[:500])
+                result = JudgeResult(JudgeStatus.WRONG_ANSWER, message=msg[:500])
+                # 清理大的输出缓冲区
+                del stdout, stderr, msg
+                return result
 
         except Exception as e:
             return JudgeResult(JudgeStatus.SYSTEM_ERROR, message=str(e))
@@ -343,7 +415,12 @@ class Judge:
             while expected_lines and not expected_lines[-1]:
                 expected_lines.pop()
 
-            return user_lines == expected_lines
+            result = user_lines == expected_lines
+
+            # 清理大列表
+            del user_lines, expected_lines
+
+            return result
         except:
             return False
 
@@ -443,6 +520,8 @@ class Judge:
         finally:
             if self.work_dir and self.work_dir.exists():
                 shutil.rmtree(self.work_dir, ignore_errors=True)
+            # 手动触发垃圾回收
+            gc.collect()
 
     async def _run_program(self, exe_file: Path, input_file: Path, output_file: Path,
                            time_limit: int) -> JudgeResult:
@@ -471,6 +550,13 @@ class Judge:
 
                 if elapsed_ms > time_limit:
                     return JudgeResult(JudgeStatus.TIME_LIMIT, time_used=elapsed_ms)
+
+            # Check output size
+            if output_file.exists():
+                output_size = output_file.stat().st_size
+                if output_size > MAX_OUTPUT_SIZE:
+                    return JudgeResult(JudgeStatus.RUNTIME_ERROR, time_used=elapsed_ms,
+                                       message=f"Output too large: {output_size} bytes")
 
                 return JudgeResult(JudgeStatus.ACCEPTED, time_used=elapsed_ms)
         except Exception as e:

@@ -60,7 +60,7 @@ submitter = RemoteOJSubmitter(
 )
 
 # 所有C++版本（按顺序测试）
-CPP_VERSIONS = ["c++14", "c++17", "c++20", "c++23"]
+CPP_VERSIONS = ["c++17"]
 
 
 def load_checkpoint():
@@ -341,6 +341,35 @@ def filter_incorrect_codes(problem_id: str, incorrect_codes: List[str]) -> List[
         loop.close()
 
 
+def is_code_failed(problem_id: str, code: str) -> bool:
+    """检查某个代码是否在failed_codes目录中
+    逐个文件读取并比较，避免一次性加载所有失败代码到内存
+
+    Args:
+        problem_id: 题目ID
+        code: 待检查的代码内容
+
+    Returns:
+        True if code is in failed_codes, False otherwise
+    """
+    problem_dir = os.path.join(failed_codes_dir, problem_id)
+    if not os.path.exists(problem_dir):
+        return False
+
+    for filename in os.listdir(problem_dir):
+        if filename.endswith('.cpp'):
+            filepath = os.path.join(problem_dir, filename)
+            try:
+                with open(filepath, 'r', encoding='utf-8') as f:
+                    failed_code = f.read()
+                    if failed_code == code:
+                        return True
+            except Exception as e:
+                print(f"    ⚠ Failed to read {filepath}: {e}")
+
+    return False
+
+
 def process_parquet_file(input_file: str, output_file: str, processed_problems: set):
     """
     处理单个 parquet 文件
@@ -349,9 +378,14 @@ def process_parquet_file(input_file: str, output_file: str, processed_problems: 
     print(f"Processing: {os.path.basename(input_file)}")
     print(f"{'='*80}")
 
-    # 读取 parquet 文件
+    # 如果输出文件已存在，直接跳过整个文件
+    if os.path.exists(output_file):
+        print(f"  ⏭ Output file already exists, skipping entire file")
+        return
+
+    # 读取 parquet 文件（禁用内存映射避免 Windows 文件锁定问题）
     try:
-        df = pl.read_parquet(input_file)
+        df = pl.read_parquet(input_file, use_pyarrow=False)
         print(f"Loaded {len(df)} rows")
         print(f"Columns: {df.columns}")
     except Exception as e:
@@ -361,76 +395,115 @@ def process_parquet_file(input_file: str, output_file: str, processed_problems: 
     # 处理每一行
     filtered_records = []
 
-    for row in df.iter_rows(named=True):
-        problem_id = row.get("id")
+    try:
+        for row in df.iter_rows(named=True):
+            problem_id = row.get("id")
 
-        if problem_id in processed_problems:
-            print(f"  ⏭ Skipping {problem_id} (already processed)")
-            continue
+            if problem_id in processed_problems:
+                # 从failed_codes恢复filtered_codes（逐个比较，避免加载所有代码到内存）
+                print(f"  ⏭ {problem_id} already processed, recovering from failed_codes...")
+                incorrect_codes = row.get("incorrect_codes", [])
+                if not incorrect_codes:
+                    print(f"    ℹ No incorrect codes, skipping")
+                    continue
 
-        incorrect_codes = row.get("incorrect_codes", [])
-        if not incorrect_codes:
-            print(f"  ℹ {problem_id}: No incorrect codes, skipping")
+                # 逐个检查代码是否失败，避免一次性加载所有失败代码
+                filtered_codes = []
+                for code in incorrect_codes:
+                    if not is_code_failed(problem_id, code):
+                        filtered_codes.append(code)
+                    # 立即释放code，避免内存累积
+                    del code
+
+                if filtered_codes:
+                    # 恢复记录到输出
+                    new_record = dict(row)
+                    new_record["incorrect_codes"] = filtered_codes
+                    filtered_records.append(new_record)
+                    print(f"    ✓ Recovered: {len(filtered_codes)}/{len(incorrect_codes)} codes (kept in dataset)")
+                else:
+                    print(f"    ℹ All codes filtered out (removed from dataset)")
+
+                # 清理临时变量
+                del incorrect_codes, filtered_codes
+                continue
+
+            incorrect_codes = row.get("incorrect_codes", [])
+            if not incorrect_codes:
+                print(f"  ℹ {problem_id}: No incorrect codes, skipping")
+                processed_problems.add(problem_id)
+                continue
+
+            test_cases = row.get("test_cases", [])
+            checker = row.get("checker")
+            time_limit = row.get("time_limit")
+            memory_limit = row.get("memory_limit")
+
+            print(f"\n  [Processing] {problem_id}: {len(incorrect_codes)} codes, {len(test_cases)} test cases")
+
+            # 1. 上传题目到OJ
+            print(f"    Uploading problem to OJ...")
+            upload_success = asyncio.run(upload_problem(
+                problem_id=problem_id,
+                test_cases=test_cases,
+                checker=checker,
+                time_limit=time_limit,
+                memory_limit=memory_limit
+            ))
+
+            if not upload_success:
+                print(f"    ⚠ Failed to upload problem, skipping")
+                processed_problems.add(problem_id)
+                # 清理大对象
+                del test_cases, incorrect_codes
+                continue
+
+            print(f"    ✓ Problem uploaded")
+
+            # 2. 过滤代码
+            print(f"    Filtering codes...")
+            original_count = len(incorrect_codes)
+            filtered_codes = filter_incorrect_codes(problem_id, incorrect_codes)
+
+            # 清理不再需要的大对象
+            del test_cases, incorrect_codes
+            gc.collect()
+
+            # 标记已处理
             processed_problems.add(problem_id)
-            continue
 
-        test_cases = row.get("test_cases", [])
-        checker = row.get("checker")
-        time_limit = row.get("time_limit")
-        memory_limit = row.get("memory_limit")
+            if filtered_codes:
+                # 创建新记录，保留原有字段，更新 incorrect_codes
+                new_record = dict(row)
+                new_record["incorrect_codes"] = filtered_codes
+                filtered_records.append(new_record)
+                print(f"  ✓ {problem_id}: {len(filtered_codes)}/{original_count} codes passed all versions")
+            else:
+                print(f"  ℹ {problem_id}: All codes filtered out")
 
-        print(f"\n  [Processing] {problem_id}: {len(incorrect_codes)} codes, {len(test_cases)} test cases")
+            # 清理临时变量
+            del filtered_codes
 
-        # 1. 上传题目到OJ
-        print(f"    Uploading problem to OJ...")
-        upload_success = asyncio.run(upload_problem(
-            problem_id=problem_id,
-            test_cases=test_cases,
-            checker=checker,
-            time_limit=time_limit,
-            memory_limit=memory_limit
-        ))
+            # 定期保存checkpoint
+            save_checkpoint(list(processed_problems))
 
-        if not upload_success:
-            print(f"    ⚠ Failed to upload problem, skipping")
-            processed_problems.add(problem_id)
-            continue
+    finally:
+        # 清理DataFrame
+        del df
+        gc.collect()
 
-        print(f"    ✓ Problem uploaded")
-
-        # 2. 过滤代码
-        print(f"    Filtering codes...")
-        filtered_codes = filter_incorrect_codes(problem_id, incorrect_codes)
-
-        # 标记已处理
-        processed_problems.add(problem_id)
-
-        if filtered_codes:
-            # 创建新记录，保留原有字段，更新 incorrect_codes
-            new_record = dict(row)
-            new_record["incorrect_codes"] = filtered_codes
-            filtered_records.append(new_record)
-            print(f"  ✓ {problem_id}: {len(filtered_codes)}/{len(incorrect_codes)} codes passed all versions")
-        else:
-            print(f"  ℹ {problem_id}: All codes filtered out")
-
-        # 定期保存checkpoint
-        save_checkpoint(list(processed_problems))
-
-    # 写入输出文件
+    # 一次性写入所有记录
     if filtered_records:
-        if os.path.exists(output_file):
-            existing_df = pl.read_parquet(output_file)
-            new_df = pl.DataFrame(filtered_records)
-            combined_df = pl.concat([existing_df, new_df], how="vertical_relaxed")
-            combined_df.write_parquet(output_file, compression="zstd")
-            print(f"\n💾 Appended {len(filtered_records)} records to {os.path.basename(output_file)}")
-        else:
-            new_df = pl.DataFrame(filtered_records)
-            new_df.write_parquet(output_file, compression="zstd")
-            print(f"\n💾 Saved {len(filtered_records)} records to {os.path.basename(output_file)}")
+        print(f"\n💾 Writing {len(filtered_records)} records to output file...")
+        new_df = pl.DataFrame(filtered_records)
+        new_df.write_parquet(output_file, compression="zstd")
+        del new_df
+        print(f"  ✓ Saved to {output_file}")
+    else:
+        print(f"\n  ℹ No records to save")
 
     gc.collect()
+    print(f"\n✓ Finished processing {os.path.basename(input_file)}")
 
 
 # 主程序
