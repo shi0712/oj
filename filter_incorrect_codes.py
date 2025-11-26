@@ -507,65 +507,103 @@ def process_parquet_file(input_file: str, output_file: str, processed_problems: 
 
 
 # 主程序
-print("="*80)
-print("Filter Incorrect Codes - Multi-Version Test")
-print("="*80)
-print(f"Input directory: {input_dir}")
-print(f"Output directory: {output_dir}")
-print(f"C++ versions: {CPP_VERSIONS}")
+if __name__ == "__main__":
+    import sys
 
-# 加载断点
-checkpoint = load_checkpoint()
-processed_problems = set(checkpoint.get("processed_problems", []))
-print(f"✓ Already processed: {len(processed_problems)} problems")
+    # 检查命令行参数
+    if len(sys.argv) > 1:
+        # 单文件模式：python filter_incorrect_codes.py <filename>
+        target_filename = sys.argv[1]
+        print("="*80)
+        print(f"Filter Incorrect Codes - Single File Mode")
+        print("="*80)
+        print(f"Target file: {target_filename}")
+        print(f"Input directory: {input_dir}")
+        print(f"Output directory: {output_dir}")
+        print(f"C++ versions: {CPP_VERSIONS}")
 
-# 遍历输入目录
-parquet_files = [f for f in os.listdir(input_dir) if f.endswith("_passed_incorrect.parquet")]
-print(f"Found {len(parquet_files)} parquet files")
+        # 加载断点
+        checkpoint = load_checkpoint()
+        processed_problems = set(checkpoint.get("processed_problems", []))
 
-for filename in sorted(parquet_files):
-    input_file = os.path.join(input_dir, filename)
+        # 处理单个文件
+        input_file = os.path.join(input_dir, target_filename)
+        if not os.path.exists(input_file):
+            print(f"✗ Error: File not found: {input_file}")
+            sys.exit(1)
 
-    # 生成输出文件名
-    # part-00003-of-00030_passed_incorrect.parquet -> part-00003-of-00030_filtered.parquet
-    output_filename = filename.replace("_passed_incorrect.parquet", "_filtered.parquet")
-    output_file = os.path.join(output_dir, output_filename)
+        output_filename = target_filename.replace("_passed_incorrect.parquet", "_filtered.parquet")
+        output_file = os.path.join(output_dir, output_filename)
 
-    process_parquet_file(input_file, output_file, processed_problems)
+        process_parquet_file(input_file, output_file, processed_problems)
 
-# 保存最终状态
-save_checkpoint(list(processed_problems))
+        # 保存checkpoint
+        save_checkpoint(list(processed_problems))
 
-# 最终报告
-print(f"\n{'='*80}")
-print(f"✅ Finished!")
-print(f"{'='*80}")
-print(f"Total problems processed: {len(processed_problems)}")
-print(f"Output directory: {output_dir}")
+        print(f"\n{'='*80}")
+        print(f"✅ Finished processing {target_filename}!")
+        print(f"{'='*80}")
 
-# 列出输出文件
-if os.path.exists(output_dir):
-    output_files = [f for f in os.listdir(output_dir) if f.endswith('.parquet')]
-    print(f"Generated {len(output_files)} output files:")
-    total_size = 0
-    for output_file in sorted(output_files):
-        file_path = os.path.join(output_dir, output_file)
-        if os.path.exists(file_path):
-            file_size = os.path.getsize(file_path) / (1024 * 1024)
-            total_size += file_size
-            print(f"  - {output_file}: {file_size:.2f} MB")
-    print(f"Total output size: {total_size:.2f} MB")
+    else:
+        # 批量模式：python filter_incorrect_codes.py
+        print("="*80)
+        print("Filter Incorrect Codes - Batch Mode")
+        print("="*80)
+        print(f"Input directory: {input_dir}")
+        print(f"Output directory: {output_dir}")
+        print(f"C++ versions: {CPP_VERSIONS}")
 
-# 统计失败代码
-if os.path.exists(failed_codes_dir):
-    problem_dirs = [d for d in os.listdir(failed_codes_dir)
-                    if os.path.isdir(os.path.join(failed_codes_dir, d))]
-    total_failed = 0
-    for problem_dir in problem_dirs:
-        failed_count = len([f for f in os.listdir(os.path.join(failed_codes_dir, problem_dir))
-                           if f.endswith('.cpp')])
-        total_failed += failed_count
-    print(f"\nFailed codes directory: {failed_codes_dir}")
-    print(f"Total failed codes: {total_failed} codes across {len(problem_dirs)} problems")
+        # 加载断点
+        checkpoint = load_checkpoint()
+        processed_problems = set(checkpoint.get("processed_problems", []))
+        print(f"✓ Already processed: {len(processed_problems)} problems")
 
-print(f"{'='*80}")
+        # 遍历输入目录
+        parquet_files = [f for f in os.listdir(input_dir) if f.endswith("_passed_incorrect.parquet")]
+        print(f"Found {len(parquet_files)} parquet files")
+
+        for filename in sorted(parquet_files):
+            input_file = os.path.join(input_dir, filename)
+
+            # 生成输出文件名
+            output_filename = filename.replace("_passed_incorrect.parquet", "_filtered.parquet")
+            output_file = os.path.join(output_dir, output_filename)
+
+            process_parquet_file(input_file, output_file, processed_problems)
+
+        # 保存最终状态
+        save_checkpoint(list(processed_problems))
+
+        # 最终报告
+        print(f"\n{'='*80}")
+        print(f"✅ Finished!")
+        print(f"{'='*80}")
+        print(f"Total problems processed: {len(processed_problems)}")
+        print(f"Output directory: {output_dir}")
+
+        # 列出输出文件
+        if os.path.exists(output_dir):
+            output_files = [f for f in os.listdir(output_dir) if f.endswith('.parquet')]
+            print(f"Generated {len(output_files)} output files:")
+            total_size = 0
+            for output_file in sorted(output_files):
+                file_path = os.path.join(output_dir, output_file)
+                if os.path.exists(file_path):
+                    file_size = os.path.getsize(file_path) / (1024 * 1024)
+                    total_size += file_size
+                    print(f"  - {output_file}: {file_size:.2f} MB")
+            print(f"Total output size: {total_size:.2f} MB")
+
+        # 统计失败代码
+        if os.path.exists(failed_codes_dir):
+            problem_dirs = [d for d in os.listdir(failed_codes_dir)
+                            if os.path.isdir(os.path.join(failed_codes_dir, d))]
+            total_failed = 0
+            for problem_dir in problem_dirs:
+                failed_count = len([f for f in os.listdir(os.path.join(failed_codes_dir, problem_dir))
+                                   if f.endswith('.cpp')])
+                total_failed += failed_count
+            print(f"\nFailed codes directory: {failed_codes_dir}")
+            print(f"Total failed codes: {total_failed} codes across {len(problem_dirs)} problems")
+
+        print(f"{'='*80}")

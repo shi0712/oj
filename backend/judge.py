@@ -259,14 +259,14 @@ class Judge:
             )
 
             # TLE时自动重试2次（可能是并发导致的内存/CPU竞争）
-            if result.status == JudgeStatus.TIME_LIMIT:
-                for retry in range(2):
-                    print(f"[Judge #{self.submission_id}] Test {idx} TLE, retry {retry+1}/2...")
-                    await asyncio.sleep(0.2)  # 等待其他任务完成
+            if result.status == JudgeStatus.TIME_LIMIT or result == JudgeStatus.SYSTEM_ERROR:
+                for retry in range(5):
+                    print(f"[Judge #{self.submission_id}] Test {idx} TLE/SE, retry {retry+1}/2...")
+                    await asyncio.sleep(1)  # 等待其他任务完成
                     result = await self._run_single_test(
                         input_file, output_file, time_limit, memory_limit, has_checker
                     )
-                    if result.status != JudgeStatus.TIME_LIMIT:
+                    if result.status != JudgeStatus.TIME_LIMIT and result.status != JudgeStatus.SYSTEM_ERROR:
                         break
 
             if result.status != JudgeStatus.ACCEPTED:
