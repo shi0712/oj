@@ -258,15 +258,24 @@ class Judge:
                 input_file, output_file, time_limit, memory_limit, has_checker
             )
 
-            # TLE时自动重试2次（可能是并发导致的内存/CPU竞争）
-            if result.status == JudgeStatus.TIME_LIMIT or result == JudgeStatus.SYSTEM_ERROR:
-                for retry in range(5):
-                    print(f"[Judge #{self.submission_id}] Test {idx} TLE/SE, retry {retry+1}/2...")
-                    await asyncio.sleep(1)  # 等待其他任务完成
+            # TLE/SE自动重试（TLE最多3次，SE最多10次）
+            if result.status == JudgeStatus.TIME_LIMIT:
+                for retry in range(3):
+                    print(f"[Judge #{self.submission_id}] Test {idx} TLE, retry {retry+1}/3...")
+                    await asyncio.sleep(1)
                     result = await self._run_single_test(
                         input_file, output_file, time_limit, memory_limit, has_checker
                     )
-                    if result.status != JudgeStatus.TIME_LIMIT and result.status != JudgeStatus.SYSTEM_ERROR:
+                    if result.status != JudgeStatus.TIME_LIMIT:
+                        break
+            elif result.status == JudgeStatus.SYSTEM_ERROR:
+                for retry in range(10):
+                    print(f"[Judge #{self.submission_id}] Test {idx} SE, retry {retry+1}/10...")
+                    await asyncio.sleep(1)
+                    result = await self._run_single_test(
+                        input_file, output_file, time_limit, memory_limit, has_checker
+                    )
+                    if result.status != JudgeStatus.SYSTEM_ERROR:
                         break
 
             if result.status != JudgeStatus.ACCEPTED:
@@ -290,26 +299,36 @@ class Judge:
         """预热运行：执行一次程序但不计入结果（解决冷启动）"""
         exe_file = getattr(self, 'cached_exe_path', self.work_dir / "main.exe")
         print(f"[Judge #{self.submission_id}] Warmup: running {exe_file}")
-        start_time = time.perf_counter()
-        try:
-            with open(input_file, "rb") as fin:
-                process = await asyncio.create_subprocess_exec(
-                    str(exe_file),
-                    stdin=fin,
-                    stdout=asyncio.subprocess.DEVNULL,
-                    stderr=asyncio.subprocess.DEVNULL,
-                    cwd=str(self.work_dir)
-                )
-                try:
-                    await asyncio.wait_for(process.communicate(), timeout=5)
-                    elapsed = (time.perf_counter() - start_time) * 1000
-                    print(f"[Judge #{self.submission_id}] Warmup completed in {elapsed:.0f}ms")
-                except asyncio.TimeoutError:
-                    process.kill()
-                    await process.wait()
-                    print(f"[Judge #{self.submission_id}] Warmup timed out (5s)")
-        except Exception as e:
-            print(f"[Judge #{self.submission_id}] Warmup failed: {e}")
+
+        # 重试最多10次（处理System Error等异常情况）
+        for retry in range(10):
+            start_time = time.perf_counter()
+
+            try:
+                with open(input_file, "rb") as fin:
+                    process = await asyncio.create_subprocess_exec(
+                        str(exe_file),
+                        stdin=fin,
+                        stdout=asyncio.subprocess.DEVNULL,
+                        stderr=asyncio.subprocess.DEVNULL,
+                        cwd=str(self.work_dir)
+                    )
+                    try:
+                        await asyncio.wait_for(process.communicate(), timeout=5)
+                        elapsed = (time.perf_counter() - start_time) * 1000
+                        print(f"[Judge #{self.submission_id}] Warmup completed in {elapsed:.0f}ms")
+                        return  # 成功，直接返回
+                    except asyncio.TimeoutError:
+                        process.kill()
+                        await process.wait()
+                        print(f"[Judge #{self.submission_id}] Warmup timed out (5s)")
+                        return  # 超时也算成功（程序能运行）
+            except Exception as e:
+                if retry < 9:
+                    print(f"[Judge #{self.submission_id}] Warmup failed (retry {retry+1}/10): {e}")
+                    await asyncio.sleep(1)  # 等待1秒后重试
+                else:
+                    print(f"[Judge #{self.submission_id}] Warmup failed after 10 retries: {e}")
 
     async def _run_single_test(self, input_file: Path, expected_output: Path,
                                 time_limit: int, memory_limit: int, has_checker: bool) -> JudgeResult:
