@@ -199,7 +199,7 @@ class Judge:
         print(f"[Judge #{self.submission_id}] Compiling checker...")
 
         # Use C++23 for checker
-        compiler = COMPILERS.get("c++23", COMPILERS.get("c++17", COMPILERS["c++14"]))
+        compiler = COMPILERS.get("c++23")
         libs = compiler.get("libs", [])
         cmd = [compiler["path"]] + compiler["args"] + [
             f"-I{TESTLIB_DIR}",
@@ -260,7 +260,7 @@ class Judge:
 
             # TLE/SE自动重试（TLE最多3次，SE最多10次）
             if result.status == JudgeStatus.TIME_LIMIT:
-                for retry in range(3):
+                for retry in range(2):
                     print(f"[Judge #{self.submission_id}] Test {idx} TLE, retry {retry+1}/3...")
                     await asyncio.sleep(1)
                     result = await self._run_single_test(
@@ -269,7 +269,7 @@ class Judge:
                     if result.status != JudgeStatus.TIME_LIMIT:
                         break
             elif result.status == JudgeStatus.SYSTEM_ERROR:
-                for retry in range(10):
+                for retry in range(2):
                     print(f"[Judge #{self.submission_id}] Test {idx} SE, retry {retry+1}/10...")
                     await asyncio.sleep(1)
                     result = await self._run_single_test(
@@ -301,7 +301,7 @@ class Judge:
         print(f"[Judge #{self.submission_id}] Warmup: running {exe_file}")
 
         # 重试最多10次（处理System Error等异常情况）
-        for retry in range(10):
+        for retry in range(2):
             start_time = time.perf_counter()
 
             try:
@@ -334,6 +334,15 @@ class Judge:
                                 time_limit: int, memory_limit: int, has_checker: bool) -> JudgeResult:
         exe_file = getattr(self, 'cached_exe_path', self.work_dir / "main.exe")
         user_output = self.work_dir / "user.out"
+
+        # Debug logging for test case 33
+        test_num = int(input_file.stem)
+        if test_num == 33:
+            print(f"[Judge #{self.submission_id}] === Debug test 33 ===")
+            print(f"  exe_file: {exe_file}, exists: {exe_file.exists()}")
+            print(f"  input_file: {input_file}, exists: {input_file.exists()}, size: {input_file.stat().st_size if input_file.exists() else 0}")
+            print(f"  expected_output: {expected_output}, exists: {expected_output.exists()}")
+            print(f"  work_dir: {self.work_dir}, exists: {self.work_dir.exists()}")
 
         try:
             # Run program
@@ -390,12 +399,20 @@ class Judge:
                     return JudgeResult(JudgeStatus.WRONG_ANSWER, time_used=elapsed_ms)
 
         except Exception as e:
-            return JudgeResult(JudgeStatus.SYSTEM_ERROR, message=str(e))
+            import traceback
+            error_msg = f"{type(e).__name__}: {str(e)}"
+            traceback_str = traceback.format_exc()
+            print(f"[Judge #{self.submission_id}] SYSTEM_ERROR in _run_single_test:")
+            print(traceback_str)
+            return JudgeResult(JudgeStatus.SYSTEM_ERROR, message=error_msg)
 
     async def _run_checker(self, input_file: Path, user_output: Path, expected_output: Path) -> JudgeResult:
         checker_exe = self.problem_dir / "checker.exe"  # Use cached checker
 
         try:
+            import time
+            start_time = time.perf_counter()
+
             process = await asyncio.create_subprocess_exec(
                 str(checker_exe),
                 str(input_file),
@@ -407,6 +424,12 @@ class Judge:
             )
             stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=10)
 
+            elapsed = time.perf_counter() - start_time
+
+            # 记录checker运行时间超过10秒的题目
+            if elapsed > 10:
+                self._record_slow_checker(input_file, elapsed)
+
             # testlib.h exit codes: 0=AC, 1=WA, 2=PE, 3=Fail
             if process.returncode == 0:
                 return JudgeResult(JudgeStatus.ACCEPTED)
@@ -417,8 +440,69 @@ class Judge:
                 del stdout, stderr, msg
                 return result
 
+        except asyncio.TimeoutError:
+            # Checker超时，记录问题
+            self._record_slow_checker(input_file, timeout=True)
+
+            print(f"[Judge #{self.submission_id}] Checker timeout after 10s on {input_file.stem}")
+            try:
+                process.kill()
+                await process.wait()
+            except:
+                pass
+            return JudgeResult(JudgeStatus.SYSTEM_ERROR, message=f"Checker timeout on test {input_file.stem}")
         except Exception as e:
+            import traceback
+            print(f"[Judge #{self.submission_id}] Checker exception:")
+            print(traceback.format_exc())
             return JudgeResult(JudgeStatus.SYSTEM_ERROR, message=str(e))
+
+    def _record_slow_checker(self, input_file: Path, elapsed: float = None, timeout: bool = False):
+        """记录checker性能问题的题目"""
+        import json
+        from datetime import datetime
+
+        record_file = DATA_DIR / "problematic_problems.json"
+
+        # 读取现有记录
+        if record_file.exists():
+            try:
+                with open(record_file, 'r', encoding='utf-8') as f:
+                    records = json.load(f)
+            except:
+                records = {}
+        else:
+            records = {}
+
+        problem_id = self.problem_id
+        test_case = input_file.stem
+
+        if problem_id not in records:
+            records[problem_id] = {
+                "reason": "slow_checker",
+                "test_cases": {},
+                "first_seen": datetime.now().isoformat()
+            }
+
+        if timeout:
+            records[problem_id]["test_cases"][test_case] = {
+                "status": "timeout",
+                "time": ">10s",
+                "last_seen": datetime.now().isoformat()
+            }
+        else:
+            records[problem_id]["test_cases"][test_case] = {
+                "status": "slow",
+                "time": f"{elapsed:.2f}s",
+                "last_seen": datetime.now().isoformat()
+            }
+
+        # 写入文件
+        try:
+            with open(record_file, 'w', encoding='utf-8') as f:
+                json.dump(records, f, indent=2, ensure_ascii=False)
+        except Exception as e:
+            print(f"[Judge #{self.submission_id}] Failed to record slow checker: {e}")
 
     def _compare_output(self, user_output: Path, expected_output: Path) -> bool:
         """Compare outputs ignoring trailing whitespace and blank lines"""

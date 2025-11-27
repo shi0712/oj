@@ -40,6 +40,9 @@ failed_codes_dir = "./failed_codes"
 # checkpoint文件
 checkpoint_file = "checkpoint_filter.json"
 
+# 有问题的题目记录文件
+problematic_problems_file = "./data/problematic_problems.json"
+
 # OJ服务器地址
 OJ_BASE_URL = "http://localhost:8000"
 
@@ -74,6 +77,24 @@ def load_checkpoint():
         except Exception as e:
             print(f"⚠ Failed to load checkpoint: {e}")
     return {"processed_problems": []}
+
+
+def load_problematic_problems():
+    """加载有问题的题目列表"""
+    if os.path.exists(problematic_problems_file):
+        try:
+            with open(problematic_problems_file, 'r', encoding='utf-8') as f:
+                records = json.load(f)
+            print(f"[OK] Loaded {len(records)} problematic problems (slow checker)")
+            return set(records.keys())
+        except Exception as e:
+            print(f"[WARNING] Failed to load problematic problems: {e}")
+    return set()
+
+
+def is_problematic(problem_id: str, problematic_set: set) -> bool:
+    """检查题目是否有问题（checker超时）"""
+    return problem_id in problematic_set
 
 
 def save_checkpoint(processed_problems: list):
@@ -370,7 +391,7 @@ def is_code_failed(problem_id: str, code: str) -> bool:
     return False
 
 
-def process_parquet_file(input_file: str, output_file: str, processed_problems: set):
+def process_parquet_file(input_file: str, output_file: str, processed_problems: set, problematic_problems: set):
     """
     处理单个 parquet 文件
     """
@@ -398,6 +419,11 @@ def process_parquet_file(input_file: str, output_file: str, processed_problems: 
     try:
         for row in df.iter_rows(named=True):
             problem_id = row.get("id")
+
+            # 检查是否是有问题的题目（checker超时）
+            if is_problematic(problem_id, problematic_problems):
+                print(f"  ⏭ {problem_id} has slow checker (>10s), skipping")
+                continue
 
             if problem_id in processed_problems:
                 # 从failed_codes恢复filtered_codes（逐个比较，避免加载所有代码到内存）
@@ -526,6 +552,9 @@ if __name__ == "__main__":
         checkpoint = load_checkpoint()
         processed_problems = set(checkpoint.get("processed_problems", []))
 
+        # 加载有问题的题目列表
+        problematic_problems = load_problematic_problems()
+
         # 处理单个文件
         input_file = os.path.join(input_dir, target_filename)
         if not os.path.exists(input_file):
@@ -535,7 +564,7 @@ if __name__ == "__main__":
         output_filename = target_filename.replace("_passed_incorrect.parquet", "_filtered.parquet")
         output_file = os.path.join(output_dir, output_filename)
 
-        process_parquet_file(input_file, output_file, processed_problems)
+        process_parquet_file(input_file, output_file, processed_problems, problematic_problems)
 
         # 保存checkpoint
         save_checkpoint(list(processed_problems))
@@ -558,6 +587,9 @@ if __name__ == "__main__":
         processed_problems = set(checkpoint.get("processed_problems", []))
         print(f"✓ Already processed: {len(processed_problems)} problems")
 
+        # 加载有问题的题目列表
+        problematic_problems = load_problematic_problems()
+
         # 遍历输入目录
         parquet_files = [f for f in os.listdir(input_dir) if f.endswith("_passed_incorrect.parquet")]
         print(f"Found {len(parquet_files)} parquet files")
@@ -569,7 +601,7 @@ if __name__ == "__main__":
             output_filename = filename.replace("_passed_incorrect.parquet", "_filtered.parquet")
             output_file = os.path.join(output_dir, output_filename)
 
-            process_parquet_file(input_file, output_file, processed_problems)
+            process_parquet_file(input_file, output_file, processed_problems, problematic_problems)
 
         # 保存最终状态
         save_checkpoint(list(processed_problems))
