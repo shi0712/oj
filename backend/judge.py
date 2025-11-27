@@ -198,14 +198,14 @@ class Judge:
 
         print(f"[Judge #{self.submission_id}] Compiling checker...")
 
-        # Use C++23 for checker
-        compiler = COMPILERS.get("c++23")
+        # Use C++20 for checker
+        compiler = COMPILERS.get("c++20")
         libs = compiler.get("libs", [])
         cmd = [compiler["path"]] + compiler["args"] + [
             f"-I{TESTLIB_DIR}",
             str(checker_src),
             "-o", str(checker_exe)
-        ] + libs
+        ]
 
         # Set PATH for MSYS2 compatibility
         compiler_bin_dir = str(Path(compiler["path"]).parent)
