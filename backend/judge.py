@@ -253,7 +253,7 @@ class Judge:
             output_file = input_file.with_suffix(".out")
             if not output_file.exists():
                 continue
-
+            print(input_file, output_file)
             result = await self._run_single_test(
                 input_file, output_file, time_limit, memory_limit, has_checker
             )
@@ -337,12 +337,12 @@ class Judge:
 
         # Debug logging for test case 33
         test_num = int(input_file.stem)
-        if test_num == 33:
-            print(f"[Judge #{self.submission_id}] === Debug test 33 ===")
-            print(f"  exe_file: {exe_file}, exists: {exe_file.exists()}")
-            print(f"  input_file: {input_file}, exists: {input_file.exists()}, size: {input_file.stat().st_size if input_file.exists() else 0}")
-            print(f"  expected_output: {expected_output}, exists: {expected_output.exists()}")
-            print(f"  work_dir: {self.work_dir}, exists: {self.work_dir.exists()}")
+        # if test_num == 33:
+        #     print(f"[Judge #{self.submission_id}] === Debug test 33 ===")
+        #     print(f"  exe_file: {exe_file}, exists: {exe_file.exists()}")
+        #     print(f"  input_file: {input_file}, exists: {input_file.exists()}, size: {input_file.stat().st_size if input_file.exists() else 0}")
+        #     print(f"  expected_output: {expected_output}, exists: {expected_output.exists()}")
+        #     print(f"  work_dir: {self.work_dir}, exists: {self.work_dir.exists()}")
 
         try:
             # Run program
@@ -365,7 +365,12 @@ class Judge:
                     # 清理 stderr 缓冲区
                     del stderr
                 except asyncio.TimeoutError:
-                    process.kill()
+                    # 尝试终止进程，如果进程已经退出则忽略错误
+                    try:
+                        process.kill()
+                        await process.wait()
+                    except ProcessLookupError:
+                        pass  # 进程已经退出
                     return JudgeResult(JudgeStatus.TIME_LIMIT, time_used=time_limit)
 
                 elapsed_ms = int((time.perf_counter() - start_time) * 1000)
